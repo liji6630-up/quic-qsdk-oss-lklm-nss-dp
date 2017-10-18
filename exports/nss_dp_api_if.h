@@ -55,6 +55,8 @@ struct nss_dp_data_plane_ops {
 			    uint32_t pause_on);
 	int (*vsi_assign)(struct nss_dp_data_plane_ctx *dpc, uint32_t vsi);
 	int (*vsi_unassign)(struct nss_dp_data_plane_ctx *dpc, uint32_t vsi);
+	int (*rx_flow_steer)(struct nss_dp_data_plane_ctx *dpc, struct sk_buff *skb,
+				uint32_t cpu, bool is_add);
 };
 
 /*
