@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -29,8 +29,14 @@
 #include "nss_dp_hal_if.h"
 
 #define NSS_DP_START_PHY_PORT	1
-#define NSS_DP_MAX_PHY_PORTS	6
+#if defined(NSS_DP_IPQ60XX)
+#define NSS_DP_MAX_PHY_PORTS   5
+#else
+#define NSS_DP_MAX_PHY_PORTS   6
+#endif
 #define NSS_DP_ETH_HLEN_CRC	(ETH_HLEN + ETH_FCS_LEN + 2*(VLAN_HLEN))
+
+#define NSS_DP_ACL_DEV_ID 0
 
 struct nss_dp_global_ctx;
 
