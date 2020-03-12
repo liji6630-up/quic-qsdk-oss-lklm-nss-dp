@@ -1,6 +1,6 @@
 /*
  **************************************************************************
- * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -340,6 +340,14 @@ static int nss_dp_rx_flow_steer(struct net_device *netdev, const struct sk_buff 
 		return 0;
 
 	/*
+	 * check rx_flow_steer is defined in data plane ops
+	 */
+	if (!dp_priv->data_plane_ops->rx_flow_steer) {
+		netdev_dbg(netdev, "Data plane ops not defined for flow steer\n");
+		return -EINVAL;
+	}
+
+	/*
 	 * Delete the old flow rule
 	 */
 	if (dp_priv->data_plane_ops->rx_flow_steer(dp_priv->dpc, skb, rxcpu, false)) {
@@ -559,7 +567,9 @@ static int32_t nss_dp_probe(struct platform_device *pdev)
 	netdev->watchdog_timeo = 5 * HZ;
 	netdev->netdev_ops = &nss_dp_netdev_ops;
 	nss_dp_set_ethtool_ops(netdev);
+#ifdef CONFIG_NET_SWITCHDEV
 	nss_dp_switchdev_setup(netdev);
+#endif
 
 	ret = nss_dp_of_get_pdata(np, netdev, &gmac_hal_pdata);
 	if (ret != 0) {
