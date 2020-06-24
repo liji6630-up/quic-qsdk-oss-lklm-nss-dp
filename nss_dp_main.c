@@ -24,25 +24,20 @@
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
+#include <linux/of_mdio.h>
 #include <linux/phy.h>
 #if defined(NSS_DP_PPE_SUPPORT)
 #include <ref/ref_vsi.h>
 #endif
 #include <net/switchdev.h>
 
-#include "nss_dp_dev.h"
-#include "edma.h"
-
-/*
- * Number of host CPU cores
- */
-#define NSS_DP_HOST_CPU_NUM 4
+#include "nss_dp_hal.h"
 
 /*
  * Number of TX/RX queue supported is based on the number of host CPU
  */
-#define NSS_DP_NETDEV_TX_QUEUE_NUM NSS_DP_HOST_CPU_NUM
-#define NSS_DP_NETDEV_RX_QUEUE_NUM NSS_DP_HOST_CPU_NUM
+#define NSS_DP_NETDEV_TX_QUEUE_NUM NSS_DP_HAL_CPU_NUM
+#define NSS_DP_NETDEV_RX_QUEUE_NUM NSS_DP_HAL_CPU_NUM
 
 /* ipq40xx_mdio_data */
 struct ipq40xx_mdio_data {
@@ -53,7 +48,7 @@ struct ipq40xx_mdio_data {
 
 /* Global data */
 struct nss_dp_global_ctx dp_global_ctx;
-struct nss_dp_data_plane_ctx dp_global_data_plane_ctx[NSS_DP_MAX_PHY_PORTS];
+struct nss_dp_data_plane_ctx dp_global_data_plane_ctx[NSS_DP_HAL_MAX_PORTS];
 
 /*
  * nss_dp_do_ioctl()
@@ -215,7 +210,9 @@ static int nss_dp_close(struct net_device *netdev)
 	}
 #endif
 
-	/* Notify data plane to close */
+	/*
+	 * Notify data plane to close
+	 */
 	if (dp_priv->data_plane_ops->close(dp_priv->dpc)) {
 		netdev_dbg(netdev, "Data plane close failed\n");
 		return -EAGAIN;
@@ -448,7 +445,7 @@ static int32_t nss_dp_of_get_pdata(struct device_node *np,
 		return -EFAULT;
 	}
 
-	if (dp_priv->macid > NSS_DP_MAX_PHY_PORTS || !dp_priv->macid) {
+	if (dp_priv->macid > NSS_DP_HAL_MAX_PORTS || !dp_priv->macid) {
 		pr_err("%s: invalid macid %d\n", np->name, dp_priv->macid);
 		return -EFAULT;
 	}
@@ -505,6 +502,14 @@ static struct mii_bus *nss_dp_mdio_attach(struct platform_device *pdev)
 	struct platform_device *mdio_plat;
 	struct ipq40xx_mdio_data *mdio_data;
 
+	/*
+	 * Find mii_bus using "mdio-bus" handle.
+	 */
+	mdio_node = of_parse_phandle(pdev->dev.of_node, "mdio-bus", 0);
+	if (mdio_node) {
+		return of_mdio_find_bus(mdio_node);
+	}
+
 	mdio_node = of_find_compatible_node(NULL, NULL, "qcom,ipq40xx-mdio");
 	if (!mdio_node) {
 		dev_err(&pdev->dev, "cannot find mdio node by phandle\n");
@@ -527,6 +532,17 @@ static struct mii_bus *nss_dp_mdio_attach(struct platform_device *pdev)
 
 	return mdio_data->mii_bus;
 }
+
+#ifdef CONFIG_NET_SWITCHDEV
+/*
+ * nss_dp_is_phy_dev()
+ *	Check if it is dp device
+ */
+bool nss_dp_is_phy_dev(struct net_device *dev)
+{
+	return (dev->netdev_ops == &nss_dp_netdev_ops);
+}
+#endif
 
 /*
  * nss_dp_adjust_link()
@@ -607,8 +623,13 @@ static int32_t nss_dp_probe(struct platform_device *pdev)
 		goto fail;
 	}
 
-	/* Use EDMA data plane as default */
-	dp_priv->data_plane_ops = &nss_dp_edma_ops;
+	/* Use data plane ops as per the configured SoC */
+	dp_priv->data_plane_ops = nss_dp_hal_get_data_plane_ops();
+	if (!dp_priv->data_plane_ops) {
+		netdev_dbg(netdev, "Dataplane ops not found.\n");
+		goto fail;
+	}
+
 	dp_priv->dpc = &dp_global_data_plane_ctx[dp_priv->macid-1];
 	dp_priv->dpc->dev = netdev;
 	dp_priv->ctx = &dp_global_ctx;
@@ -621,14 +642,9 @@ static int32_t nss_dp_probe(struct platform_device *pdev)
 	 * The subsequent hal_ops calls expect the DP to pass the HAL
 	 * context pointer as an argument
 	 */
-	if (gmac_hal_pdata.mactype == GMAC_HAL_TYPE_QCOM)
-		dp_priv->gmac_hal_ops = &qcom_hal_ops;
-	else if (gmac_hal_pdata.mactype == GMAC_HAL_TYPE_10G)
-		dp_priv->gmac_hal_ops = &syn_hal_ops;
-
+	dp_priv->gmac_hal_ops = nss_dp_hal_get_gmac_ops(gmac_hal_pdata.mactype);
 	if (!dp_priv->gmac_hal_ops) {
-		netdev_dbg(netdev, "Unsupported Mac type: %d\n",
-					gmac_hal_pdata.mactype);
+		netdev_dbg(netdev, "Unsupported Mac type: %d\n", gmac_hal_pdata.mactype);
 		goto fail;
 	}
 
@@ -696,8 +712,7 @@ static int32_t nss_dp_probe(struct platform_device *pdev)
 	dp_global_ctx.nss_dp[dp_priv->macid - 1] = dp_priv;
 	dp_global_ctx.slowproto_acl_bm = 0;
 
-	netdev_dbg(netdev, "Init NSS DP GMAC%d (base = 0x%lx)\n",
-				dp_priv->macid, netdev->base_addr);
+	netdev_dbg(netdev, "Init NSS DP GMAC%d (base = 0x%lx)\n", dp_priv->macid, netdev->base_addr);
 
 	return 0;
 
@@ -715,7 +730,7 @@ static int nss_dp_remove(struct platform_device *pdev)
 	struct nss_dp_dev *dp_priv;
 	struct nss_gmac_hal_ops *hal_ops;
 
-	for (i = 0; i < NSS_DP_MAX_PHY_PORTS; i++) {
+	for (i = 0; i < NSS_DP_HAL_MAX_PORTS; i++) {
 		dp_priv = dp_global_ctx.nss_dp[i];
 		if (!dp_priv)
 			continue;
@@ -759,16 +774,18 @@ int __init nss_dp_init(void)
 	 * Bail out on not supported platform
 	 * TODO: Handle this properly with SoC ops
 	 */
-	if (!of_machine_is_compatible("qcom,ipq807x") && !of_machine_is_compatible("qcom,ipq8074") && !of_machine_is_compatible("qcom,ipq6018"))
+	if (!of_machine_is_compatible("qcom,ipq807x") &&
+			!of_machine_is_compatible("qcom,ipq8074") &&
+			!of_machine_is_compatible("qcom,ipq6018") &&
+			!of_machine_is_compatible("qcom,ipq5018"))
 		return 0;
 
 	/*
 	 * TODO Move this to soc_ops
 	 */
 	dp_global_ctx.common_init_done = false;
-	ret = edma_init();
-	if (ret) {
-		pr_info("EDMA init failed\n");
+	if (!nss_dp_hal_init()) {
+		pr_err("DP hal init failed.\n");
 		return -EFAULT;
 	}
 
@@ -794,7 +811,7 @@ void __exit nss_dp_exit(void)
 	 * TODO Move this to soc_ops
 	 */
 	if (dp_global_ctx.common_init_done) {
-		edma_cleanup(false);
+		nss_dp_hal_cleanup();
 		dp_global_ctx.common_init_done = false;
 	}
 
